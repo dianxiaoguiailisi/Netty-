@@ -455,6 +455,10 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
             return remoteAddress0();
         }
 
+        /**
+         * @param eventLoop
+         * @param promise
+         */
         @Override
         public final void register(EventLoop eventLoop, final ChannelPromise promise) {
             ObjectUtil.checkNotNull(eventLoop, "eventLoop");
@@ -463,13 +467,10 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 return;
             }
             if (!isCompatible(eventLoop)) {
-                promise.setFailure(
-                        new IllegalStateException("incompatible event loop type: " + eventLoop.getClass().getName()));
+                promise.setFailure(new IllegalStateException("incompatible event loop type: " + eventLoop.getClass().getName()));
                 return;
             }
-
             AbstractChannel.this.eventLoop = eventLoop;
-
             if (eventLoop.inEventLoop()) {
                 register0(promise);
             } else {
@@ -481,9 +482,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                         }
                     });
                 } catch (Throwable t) {
-                    logger.warn(
-                            "Force-closing a channel whose registration task was not accepted by an event loop: {}",
-                            AbstractChannel.this, t);
+                    logger.warn("Force-closing a channel whose registration task was not accepted by an event loop: {}", AbstractChannel.this, t);
                     closeForcibly();
                     closeFuture.setClosed();
                     safeSetFailure(promise, t);
@@ -491,39 +490,35 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
             }
         }
 
+        /**
+         *
+         * @param promise
+         */
         private void register0(ChannelPromise promise) {
             try {
-                // check if the channel is still open as it could be closed in the mean time when the register
-                // call was outside of the eventLoop
                 if (!promise.setUncancellable() || !ensureOpen(promise)) {
                     return;
                 }
                 boolean firstRegistration = neverRegistered;
+                //执行注册操作：把 Java 原生的 SocketChannel 注册到 Selector 上
                 doRegister();
                 neverRegistered = false;
                 registered = true;
-
-                // Ensure we call handlerAdded(...) before we actually notify the promise. This is needed as the
-                // user may already fire events through the pipeline in the ChannelFutureListener.
+                //unzip操作：触发 Pipeline 中的回调
                 pipeline.invokeHandlerAddedIfNeeded();
-
+                //将传入的 promise 标记为成功。这会立刻唤醒/触发外部所有监听这个 promise 的回调函数，告诉它们：“Channel 注册成功啦！”。
                 safeSetSuccess(promise);
+                //向 Pipeline 发出 ChannelRegistered 事件。这会沿着 Pipeline 依次调用各个 Handler 里的 channelRegistered() 方法。
                 pipeline.fireChannelRegistered();
-                // Only fire a channelActive if the channel has never been registered. This prevents firing
-                // multiple channel actives if the channel is deregistered and re-registered.
-                if (isActive()) {
+                //处理 ChannelActive 状态与读事件:
+                if (isActive()) {//判断当前 Channel 是否处于活跃状态（比如对于 TCP 客户端，表示连接已经成功建立；对于服务端，表示端口已经绑定成功）。
                     if (firstRegistration) {
-                        pipeline.fireChannelActive();
+                        pipeline.fireChannelActive();//如果处于活跃状态，且是第一次注册:Pipeline 中触发 ChannelActive 事件
                     } else if (config().isAutoRead()) {
-                        // This channel was registered before and autoRead() is set. This means we need to begin read
-                        // again so that we process inbound data.
-                        //
-                        // See https://github.com/netty/netty/issues/4805
-                        beginRead();
+                        beginRead();//如果不是第一次注册（比如之前注销过现在重新注册），并且用户配置了 autoRead（自动读取，默认为 true），则直接调用 beginRead() 重新开始监听底层的读事件。
                     }
                 }
             } catch (Throwable t) {
-                // Close the channel directly to avoid FD leak.
                 closeForcibly();
                 closeFuture.setClosed();
                 safeSetFailure(promise, t);

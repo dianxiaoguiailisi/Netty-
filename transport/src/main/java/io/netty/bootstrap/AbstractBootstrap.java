@@ -261,24 +261,28 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     }
 
     /**
-     * 模板方法
-     * @param localAddress
-     * @return {@link ChannelFuture }
+     * 先把 Channel 准备好并注册到线程池（EventLoop）中，等注册成功后，再去真正地绑定底层的物理端口
+     * @param localAddress 本地网络地址（通常包含 IP 地址和端口号）
+     * @return {@link ChannelFuture } 异步操作的结果凭证
      */
     private ChannelFuture doBind(final SocketAddress localAddress) {
-        //
+        //(1)利用反射工厂ReflectiveChannelFactory创建Channel实例，并(2)初始化该Channel,(3)最后将Channel注册到Boss的EventLoopGroup中的某一个EventLoop的某个Selector上
+        //服务端创建的是NioServerSocketChannel;客户端创建的是NioSocketChannel
         final ChannelFuture regFuture = initAndRegister();
         final Channel channel = regFuture.channel();
         if (regFuture.cause() != null) {
             return regFuture;
         }
-
+        //若此时，将Channel注册到Boss的EventLoopGroup中的某一个EventLoop的某个Selector上已经完成
         if (regFuture.isDone()) {
-            ChannelPromise promise = channel.newPromise();
+            ChannelPromise promise = channel.newPromise();//创建新的 Promise，代表接下来的“绑定端口”操作的结果。
+            //绑定操作
             doBind0(regFuture, channel, localAddress, promise);
             return promise;
         } else {
+        //注册还在另外一个线程里排队进行中
             final PendingRegistrationPromise promise = new PendingRegistrationPromise(channel);
+            //给注册凭证挂上一个监听器回调
             regFuture.addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future) throws Exception {
@@ -287,7 +291,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
                         promise.setFailure(cause);
                     } else {
                         promise.registered();
-
+                        //注册完了，执行绑定操作
                         doBind0(regFuture, channel, localAddress, promise);
                     }
                 }
@@ -296,10 +300,22 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
         }
     }
 
+
+    /**
+     * 实例化 ：通过反射工厂，在内存中真正 new 出一个网络通道对象（比如服务端的 NioServerSocketChannel 或客户端的 NioSocketChannel）。
+     * 初始化 ：将用户在引导类中配置好的 TCP 参数（Options）、自定义属性（Attributes）以及业务处理器（Handlers）全部组装到这个新通道中。
+     * 注册 ：将这个准备就绪的通道，移交给 Netty 的事件循环线程池（EventLoopGroup），让其与底层的多路复用器（Selector）绑定，正式开始接管 I/O 事件。
+     * @return {@link ChannelFuture } 异步操作的结果凭证
+     */
     final ChannelFuture initAndRegister() {
         Channel channel = null;
         try {
+            //通过反射工厂调用Channel的无参构造函数，创建对应的Channel实例（）
+            //服务端：NioServerSocketChannel,（1）创建Pipeline，内部存在两个处理器head 和tail;（2）创建Unsafe对象，类型NioMessageUnsafe （3）设置Channel是非阻塞状态
+            //客户端：NioSocketChannel:
             channel = channelFactory.newChannel();
+            //初始化Channel（子类实现）
+            //服务端：pipeline: head<--->CI（zip）<--->taile
             init(channel);
         } catch (Throwable t) {
             if (channel != null) {
@@ -308,7 +324,9 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             }
             return new DefaultChannelPromise(new FailedChannel(), GlobalEventExecutor.INSTANCE).setFailure(t);
         }
-
+        //将Channel注册到线程组的Selector上，group():
+        //服务端返回的是boss线程组NioEventLoopGroup
+        //客户端只有唯一的线程组
         ChannelFuture regFuture = config().group().register(channel);
         if (regFuture.cause() != null) {
             if (channel.isRegistered()) {
@@ -334,8 +352,6 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             final ChannelFuture regFuture, final Channel channel,
             final SocketAddress localAddress, final ChannelPromise promise) {
 
-        // This method is invoked before channelRegistered() is triggered.  Give user handlers a chance to set up
-        // the pipeline in its channelRegistered() implementation.
         channel.eventLoop().execute(new Runnable() {
             @Override
             public void run() {

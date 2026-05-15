@@ -109,35 +109,37 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
         return this;
     }
 
+    /**
+     * 服务端：父类bind->dobind->initAndRegister->创建NioServerSocketChannel->调用子类实现的init
+     * @param channel NioServerSocketChannel
+     * @throws Throwable
+     */
     @Override
     void init(Channel channel) throws Throwable {
+        //1.初始化NioServerSocketChannel属性
         setChannelOptions(channel, newOptionsArray(), logger);
         setAttributes(channel, newAttributesArray());
-
         ChannelPipeline p = channel.pipeline();
-
         final EventLoopGroup currentChildGroup = childGroup;
         final ChannelHandler currentChildHandler = childHandler;
         final Entry<ChannelOption<?>, Object>[] currentChildOptions = newOptionsArray(childOptions);
         final Entry<AttributeKey<?>, Object>[] currentChildAttrs = newAttributesArray(childAttrs);
         final Collection<ChannelInitializerExtension> extensions = getInitializerExtensions();
-
+        //2.向NioServerSocketChannel的pipeline中添加ChannelInitializer处理器,并提交绑定的线程NioEventLoop一个任务（向父pipeline中添加一个ServerBootstrapAcceptor处理器）
+        //ChannelInitializer(压缩包):通过适配器实现了handler接口，目的是延迟初始化PipeLine（当Pipeline绑定的Channel激活后初始化）
         p.addLast(new ChannelInitializer<Channel>() {
             @Override
             public void initChannel(final Channel ch) {
                 final ChannelPipeline pipeline = ch.pipeline();
-                ChannelHandler handler = config.handler();
+                ChannelHandler handler = config.handler();//父通道处理器
                 if (handler != null) {
-                    pipeline.addLast(handler);
+                    pipeline.addLast(handler);//向pipeLine中添加自定义配置的父通道Handler
                 }
-
+                //提交任务
                 ch.eventLoop().execute(new Runnable() {
                     @Override
                     public void run() {
-                        //参数1：ch:当前的 NioServerSocketChannel（即服务端的监听通道自身）;
-                        //参数2：Worker 线程池
-                        //参数3：在服务端启动代码中，通过 ServerBootstrap.childHandler(...) 配置的那个 Handler。
-                        //通常我们传进去的是一个 ChannelInitializer。当新连接到来时，Acceptor 会将这个 childHandler 添加到新客户端连接的 Pipeline 中。随后触发初始化逻辑，将你自己编写的各种解码器、编码器、业务 Handler 添加进去。
+                        //参数1：ch:当前的 NioServerSocketChannel（即服务端的监听通道自身）;参数2：Worker 线程池；参数3：子通道处理器
                         pipeline.addLast(new ServerBootstrapAcceptor(ch, currentChildGroup, currentChildHandler, currentChildOptions, currentChildAttrs, extensions));
                     }
                 });
