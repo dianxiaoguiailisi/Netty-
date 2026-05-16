@@ -592,10 +592,8 @@ public class DefaultChannelPipeline implements ChannelPipeline {
 
     final void invokeHandlerAddedIfNeeded() {
         assert channel.eventLoop().inEventLoop();
-        if (firstRegistration) {
+        if (firstRegistration) {//是否是第一次注册
             firstRegistration = false;
-            // We are now registered to the EventLoop. It's time to call the callbacks for the ChannelHandlers,
-            // that were added before the registration was done.
             callHandlerAddedForAllHandlers();
         }
     }
@@ -1043,22 +1041,17 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         }
     }
 
+    /**
+     * 在通道（Channel）成功绑定到工作线程（EventLoop）后，批量执行那些在绑定前就已经被添加到处理管道（Pipeline）中的 Handler 的 handlerAdded 回调事件。
+     */
     private void callHandlerAddedForAllHandlers() {
         final PendingHandlerCallback pendingHandlerCallbackHead;
         synchronized (this) {
             assert !registered;
-
-            // This Channel itself was registered.
-            registered = true;
-
+            registered = true;//在此之后，任何通过 addLast 等方法添加到 Pipeline 的新 Handler，其回调方法会被直接且立即在 EventLoop 线程中触发，而不再被封装成任务缓存到链表中。
             pendingHandlerCallbackHead = this.pendingHandlerCallbackHead;
-            // Null out so it can be GC'ed.
             this.pendingHandlerCallbackHead = null;
         }
-
-        // This must happen outside of the synchronized(...) block as otherwise handlerAdded(...) may be called while
-        // holding the lock and so produce a deadlock if handlerAdded(...) will try to add another handler from outside
-        // the EventLoop.
         PendingHandlerCallback task = pendingHandlerCallbackHead;
         while (task != null) {
             task.execute();
